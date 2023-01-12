@@ -14,6 +14,11 @@
                             :overflow {:capacity 15
                                        :orders  []}}))
 
+(defn print-event
+  [message]
+  (prn message)
+  (prn :kitchen-shelves @kitchen-shelves))
+
 (defn available-shelf
   [shelves {:keys [temp] :as order}]
   (let [{:keys [orders capacity]} (get shelves temp)]
@@ -41,36 +46,33 @@
   [{:keys [db]} order]
   (let [shelf (:temp order)]
     (swap! db #(update-in % [shelf :orders] remove-order-from-shelf order))
-    (println (str "Delivered order " (:id order)))))
-
-(defn cook-order! [order]
-  (println (str "Cooking order: " (:id order))))
+    (print-event (str "Delivered order " (:id order)))))
 
 (defn place-order-on-shelf!
   [db shelf-name order]
   (swap! db #(update-in %1 [shelf-name :orders] conj %2) order)
-  (println (str "Placed order " (:id order) " on shelf " shelf-name)))
+  (print-event (str "Placed order " (:id order) " on shelf " shelf-name)))
 
 (defn place-order-on-overflow!
   [db order]
   (swap! db (fn [shelves order] (update-in shelves [:overflow :orders] conj order)) order)
-  (println (str "Placed order " (:id order) " on overflow shelf")))
+  (print-event (str "Placed order " (:id order) " on overflow shelf")))
 
 
 (defn replace-order-on-overflow!
  [db shelves overflow-shelf order]
  (if-let [overflow-order (some (partial available-shelf shelves) (:orders overflow-shelf))]
    (do (swap! db replace-order overflow-order order)
-       (println (str "Moved order " (:id overflow-order) "from overflow shelf"
-                     " into " (:temp overflow-order) " shelf"
-                     " and placed order " (:id order)
-                     " on overflow shelf ")))
+       (print-event (str "Moved order " (:id overflow-order) "from overflow shelf"
+                         " into " (:temp overflow-order) " shelf"
+                         " and placed order " (:id order)
+                         " on overflow shelf ")))
    (let [last-order (-> shelves :overflow :orders peek)]
      (swap! db discard-order-and-place-on-overflow order)
-     (println (str "No available shelf to place from overflow!"
-                   "Discarded order " (:id last-order)
-                   " and placed order " (:id order)
-                   " on overflow shelf ")))))
+     (print-event (str "No available shelf to place from overflow!"
+                       "Discarded order " (:id last-order)
+                       " and placed order " (:id order)
+                       " on overflow shelf ")))))
 
 (defn place-order!
   [{:keys [db]} order]
@@ -83,14 +85,14 @@
       (< (count overflow-orders) overflow-capacity) (place-order-on-overflow! db order)
       :else (replace-order-on-overflow! db shelves overflow-shelf order))))
 
-(defn dispatch-courier!
+(defn dispatch-order!
   [order]
-  (let [delay-millis (* 1000 (rand-int 4) + 2)
+  (let [delay-millis (* 1000 (+ 2 (rand-int 5)))
         system {:db kitchen-shelves}]
-    (println (str "Dispatched courier to pick up order " (:id order)))
-    (Thread/sleep delay-millis)
-    (println (str "Courier arrived and picked up order " (:id order)))
+    (print-event (str "Order received: " (:id order)))
     (place-order! system order)
+    (Thread/sleep delay-millis)
+    (print-event "Courier arrived ")
     (deliver-order! system order)))
 
 (defn start-ingestion
@@ -98,8 +100,7 @@
   (let [delay-millis (/ 1000 rate-per-sec)]
     (doseq [order orders]
       (Thread/sleep delay-millis)
-      (cook-order! order)
-      (dispatch-courier! order))))
+      (dispatch-order! order))))
 
 (defn -main [& args]
   (let [json-string (slurp (io/resource "orders.json"))
@@ -107,3 +108,4 @@
                               :key-fn keyword
                               :value-fn (fn [k v] (if (= :temp k) (keyword v) v)))]
     (start-ingestion orders ORDER-RATE-PER-SEC)))
+
