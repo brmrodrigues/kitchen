@@ -1,8 +1,6 @@
 (ns kitchen.core-test
   (:require [clojure.test :refer [deftest testing is]]
-            [kitchen.core :as core]
-            [matcher-combinators.matchers :refer [embeds]]
-            [matcher-combinators.test :refer [match?]]))
+            [kitchen.core :as core]))
 
 (def initial-shelves
   {:hot      {:capacity 2
@@ -54,71 +52,44 @@
     :name "Kale Salad"
     :temp :cold}])
 
-(defn- place-orders!
-  [orders]
-  (doseq [order orders]
-    (core/place-order! {:db test-db} order)))
+(defn- consume-orders!
+  [orders order-ingestion-rate courier-arrival-rate]
+  (core/consume-orders! {:db test-db
+                         :order-ingestion-rate order-ingestion-rate
+                         :courier-arrival-rate courier-arrival-rate}
+                        orders))
 
-(defn- deliver-order!
-  [order]
-  (core/deliver-order! {:db test-db} order))
+(deftest no-overflow-orders-test
+ (reset! test-db initial-shelves)
 
-(deftest place-order-test
+ (testing "courier arrival rate is faster than order's"
+   (consume-orders! frozen-1-cold-2-fixtures 3 [0 1])
+   (Thread/sleep 1000)
+   (testing "all orders are delivered"
+     (let [shelves (get-shelves!)]
+       (is (empty? (-> shelves :frozen :orders)))
+       (is (empty? (-> shelves :cold :orders)))))))
+
+(deftest overflow-orders-test
   (reset! test-db initial-shelves)
-  (place-orders! frozen-1-cold-2-fixtures)
-  (let [shelves (get-shelves!)]
-    (testing "fill frozen shelf with only one order"
-      (is (match? (embeds [{:name "Banana Split"}])
-                  (-> shelves :frozen :orders))))
-    (testing "fill cold shelf to its max capacity"
-      (let [{:keys [capacity orders]} (-> shelves :cold)]
-        (is (match? (embeds [{:name "Acai Bowl"}
-                             {:name "Yogurt"}])
-                    orders))
-        (is (= (count orders) capacity)))))
 
-  (place-orders! overflow-fixtures)
-  (let [shelves (get-shelves!)]
-    (testing "fill overflow shelf with cold orders only"
-      (let [{:keys [capacity orders]} (-> shelves :overflow)]
-        (is (match? (embeds [{:name "Cobb Salad" :temp :cold}
-                             {:name "Cottage Cheese" :temp :cold}
-                             {:name "Coke" :temp :cold}])
-                    orders))
-        (is (= (count orders) capacity)))))
+  (testing "order's arrival is faster than courirer's => overflow shelf"
+    (consume-orders! overflow-fixtures 1 [3 4])
+    (Thread/sleep 6000)
+    (testing "there is at least one order on overflow shelf"
+      (let [shelves (get-shelves!)]
+        (is (< 0 (count (-> shelves :overflow :orders))))))))
 
-  (place-orders! overflow-discard-fixtures)
-  (let [shelves (get-shelves!)]
-    (testing "fill frozen shelf to its max capacity"
-      (let [{:keys [capacity orders]} (-> shelves :frozen)]
-        (is (match? (embeds [{:name "Banana Split"}
-                             {:name "McFlury"}])
-                    orders))
-        (is (= (count orders) capacity))))
-    (testing "Discarded Coke order to place Chocolate Gelato into the overflow shelf"
-      (let [{:keys [capacity orders]} (-> shelves :overflow)]
-        (is (match? (embeds [{:name "Cobb Salad"}
-                             {:name "Cottage Cheese"}
-                             {:name "Chocolate Gelato"}])
-                    orders))
-        (is (= (count orders) capacity)))))
 
-  (deliver-order! (first frozen-1-cold-2-fixtures))
-  (let [shelves (get-shelves!)]
-    (testing "deliver Banana Split order"
-      (let [{:keys [capacity orders]} (-> shelves :frozen)]
-        (is (match? (embeds [{:name "McFlury"}])
-                    orders))
-        (is (< (count orders) capacity)))))
+(deftest overflow-discard-test
+  (reset! test-db initial-shelves)
 
-  (place-orders! overflow-replacement-fixtures)
-  (let [shelves (get-shelves!)]
-    (testing "Moved Chocolate Gelato from overflow to frozen shelf and placed Kabe Salad order on overflow shelf"
-      (let [{overflow-orders :orders} (-> shelves :overflow)
-            {frozen-orders :orders} (-> shelves :frozen)]
-        (is (match? (embeds [{:name "Cobb Salad"}
-                             {:name "Cottage Cheese"}])
-                    overflow-orders))
-        (is (match? (embeds [{:name "McFlury"}
-                             {:name "Chocolate Gelato"}])
-                    frozen-orders))))))
+  (testing "order's arrival is faster than courirer's => overflow shelf => waste"
+    (consume-orders! (concat frozen-1-cold-2-fixtures overflow-fixtures overflow-discard-fixtures)
+                     1 [10 11])
+    (Thread/sleep 10000)
+    (testing "there are at least one order on overflow shelf"
+      (let [shelves (get-shelves!)]
+        (is (nil? (some #(= "Coke"
+                            (:name %))
+                        (-> shelves :overflow :orders))))))))
